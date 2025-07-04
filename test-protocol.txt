@@ -1,0 +1,49 @@
+Protocol Title: A Phase II, Randomized, Double-Blind, Placebo-Controlled Study of XYZ-123 in Patients with Type 2 Diabetes
+
+Protocol Number: XYZ-123-002
+Sponsor: XYZ Pharmaceuticals Inc.
+Study Phase: Phase II
+Indication: Type 2 Diabetes Mellitus
+
+Study Design:
+- Type: Randomized, double-blind, placebo-controlled
+- Duration: 24 weeks treatment + 4 weeks follow-up
+- Number of Arms: 3 (XYZ-123 low dose, XYZ-123 high dose, placebo)
+- Target Enrollment: 300 patients
+
+Primary Objectives:
+- To evaluate the efficacy of XYZ-123 compared to placebo in reducing HbA1c levels
+
+Primary Endpoints:
+- Change from baseline in HbA1c at week 24
+
+Secondary Objectives:
+- To evaluate safety and tolerability of XYZ-123
+- To assess impact on fasting glucose levels
+
+Secondary Endpoints:
+- Incidence of adverse events
+- Change from baseline in fasting glucose at week 24
+
+Study Population:
+- Adults aged 18-75 years
+- Type 2 diabetes mellitus diagnosis
+- HbA1c between 7.0% and 10.5%
+
+Visit Schedule:
+- Screening: Day -28 to -1
+- Baseline: Day 1
+- Treatment visits: Weeks 2, 4, 8, 12, 16, 20, 24
+- Follow-up: Week 28
+
+Key Inclusion Criteria:
+- Adults aged 18-75 years
+- Diagnosis of type 2 diabetes mellitus
+- HbA1c 7.0% to 10.5% at screening
+- Stable antidiabetic medication for ≥3 months
+
+Key Exclusion Criteria:
+- Type 1 diabetes mellitus
+- Recent cardiovascular events
+- Significant kidney or liver disease
+- Pregnancy or breastfeeding

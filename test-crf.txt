@@ -1,0 +1,45 @@
+CRF Specifications for Protocol XYZ-123-002
+
+Form 1: Demographics
+Form OID: DM
+Fields:
+- Subject ID (SUBJID): Text, Required, CDISC: DM.USUBJID
+- Date of Birth (DOB): Date, Required, CDISC: DM.BRTHDTC
+- Sex (SEX): Select, Required, CDISC: DM.SEX, Values: M/F
+- Race (RACE): Select, Required, CDISC: DM.RACE
+- Ethnicity (ETHNIC): Select, Required, CDISC: DM.ETHNIC
+
+Form 2: Medical History
+Form OID: MH
+Fields:
+- Medical History Term (MHTERM): Text, Required, CDISC: MH.MHTERM
+- Start Date (MHSTDTC): Date, Optional, CDISC: MH.MHSTDTC
+- Ongoing (MHONGO): Checkbox, Required, CDISC: MH.MHONGO
+
+Form 3: Vital Signs
+Form OID: VS
+Fields:
+- Systolic BP (SYSBP): Number, Required, CDISC: VS.VSSTRESN, Normal Range: 90-140
+- Diastolic BP (DIASBP): Number, Required, CDISC: VS.VSSTRESN, Normal Range: 60-90
+- Heart Rate (HR): Number, Required, CDISC: VS.VSSTRESN, Normal Range: 60-100
+- Weight (WEIGHT): Number, Required, CDISC: VS.VSSTRESN
+- Height (HEIGHT): Number, Required, CDISC: VS.VSSTRESN
+
+Form 4: Laboratory Values
+Form OID: LB
+Fields:
+- HbA1c (HBA1C): Number, Required, CDISC: LB.LBSTRESN, Normal Range: <7.0
+- Fasting Glucose (GLUC): Number, Required, CDISC: LB.LBSTRESN, Normal Range: 70-100
+- Creatinine (CREAT): Number, Required, CDISC: LB.LBSTRESN
+
+Form 5: Adverse Events
+Form OID: AE
+Fields:
+- AE Term (AETERM): Text, Required, CDISC: AE.AETERM
+- Severity (AESEV): Select, Required, CDISC: AE.AESEV, Values: MILD/MODERATE/SEVERE
+- Relationship (AEREL): Select, Required, CDISC: AE.AEREL
+- Start Date (AESTDTC): Date, Required, CDISC: AE.AESTDTC
+- End Date (AEENDTC): Date, Optional, CDISC: AE.AEENDTC
+
+Version: 1.0
+Date: 2024-01-15
