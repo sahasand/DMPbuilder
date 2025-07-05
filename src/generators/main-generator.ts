@@ -2,11 +2,11 @@ import { protocolParser } from '../parsers/protocol-parser';
 import { crfParser } from '../parsers/crf-parser';
 import { clinicalProcessor } from '../api/clinical-processor';
 import { dmpGenerator, DMPGenerationOptions } from './dmp-generator';
-import { createModuleLogger, logInfo, logError, measurePerformance } from '../utils/logger';
+import { logInfo, logError, measurePerformance } from '../utils/logger';
 import { ValidationError } from '../utils/error-handler';
 import { DMP, RiskAssessmentResult, TimelineResult, StudyProtocol, CRFSpecification } from '../types';
 
-const logger = createModuleLogger('main-generator');
+// const logger = createModuleLogger('main-generator');
 
 export interface GenerationInput {
   protocolFile?: string;
@@ -49,7 +49,7 @@ export class MainGenerator {
               return await protocolParser.parseFromPDF(protocolFile);
             } catch (error) {
               logError('Protocol parsing failed', error);
-              throw new Error(`Failed to parse protocol file: ${error.message}`);
+              throw new Error(`Failed to parse protocol file: ${error instanceof Error ? error.message : 'Unknown error'}`);
             }
           }
         );
@@ -65,7 +65,7 @@ export class MainGenerator {
               return await crfParser.parseFromPDF(crfFile);
             } catch (error) {
               logError('CRF parsing failed', error);
-              throw new Error(`Failed to parse CRF file: ${error.message}`);
+              throw new Error(`Failed to parse CRF file: ${error instanceof Error ? error.message : 'Unknown error'}`);
             }
           }
         );
@@ -108,8 +108,8 @@ export class MainGenerator {
       const processingResult = await measurePerformance(
         'clinical.processing',
         () => clinicalProcessor.processStudyDocuments(
-          input.protocolText,
-          input.crfText,
+          input.protocolText!,
+          input.crfText!,
           {
             includeRiskAssessment: input.options?.includeRiskAssessment,
             includeTimeline: input.options?.includeTimeline,
@@ -122,13 +122,18 @@ export class MainGenerator {
       // Generate recommendations
       const recommendations = clinicalProcessor.generateRecommendations(protocol, crfs);
       
-      // Generate DMP
+      // Generate DMP with AI enhancement
       const dmp = await measurePerformance(
         'dmp.generation',
         () => dmpGenerator.generateDMP(protocol, crfs, {
           ...input.options,
           includeRiskAssessment: !!riskAssessment,
           includeTimeline: !!timeline,
+          useAIGeneration: true, // Enable AI generation by default
+          aiOptions: {
+            enhancementLevel: 'professional',
+            includeRegulatorySpecifics: true,
+          }
         })
       );
       

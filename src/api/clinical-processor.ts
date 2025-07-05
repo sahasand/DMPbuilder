@@ -1,5 +1,6 @@
 import { anthropicClient } from './anthropic-client';
 import { geminiClient } from './gemini-client';
+import { hybridProcessor } from './hybrid-processor';
 import { StudyProtocol, CRFSpecification, RiskAssessmentResult, TimelineResult, StudyComplexity, DataCollectionPlan } from '../types';
 import { createModuleLogger, logInfo, logError } from '../utils/logger';
 import { ValidationError } from '../utils/error-handler';
@@ -10,7 +11,8 @@ export interface ProcessingOptions {
   includeRiskAssessment?: boolean;
   includeTimeline?: boolean;
   customPrompts?: Record<string, string>;
-  preferredProvider?: 'gemini' | 'anthropic';
+  preferredProvider?: 'gemini' | 'anthropic' | 'hybrid';
+  useHybridProcessing?: boolean;
 }
 
 export interface ProcessingResult {
@@ -46,25 +48,65 @@ export class ClinicalProcessor {
       // Validate inputs
       this.validateInputs(protocolText, crfText);
       
-      // Choose AI provider (prefer Gemini for large documents)
-      const useGemini = options.preferredProvider === 'gemini' || 
-                       options.preferredProvider !== 'anthropic';
+      // Choose processing approach
+      const useHybrid = options.useHybridProcessing !== false && 
+                       (options.preferredProvider === 'hybrid' || 
+                        protocolText.length + crfText.length > 100000);
       
-      const aiClient = useGemini ? geminiClient : anthropicClient;
-      const providerName = useGemini ? 'Gemini' : 'Anthropic';
-      
-      logInfo(`Using ${providerName} for document processing`, {
-        protocolLength: protocolText.length,
-        crfLength: crfText.length,
-      });
-      
-      // Process protocol with fallback
       let protocol: StudyProtocol;
-      try {
-        protocol = await aiClient.processProtocol(protocolText);
-        logInfo(`Protocol processed successfully with ${providerName}`, { 
+      let crfs: CRFSpecification[];
+      let processingMetadata: any = {};
+      
+      if (useHybrid) {
+        logInfo('Using hybrid AI processing', {
+          protocolLength: protocolText.length,
+          crfLength: crfText.length,
+        });
+        
+        // Process protocol with hybrid approach
+        const protocolResult = await hybridProcessor.processProtocol(
+          protocolText, 
+          'Protocol',
+          {
+            preferredModel: options.preferredProvider === 'anthropic' ? 'claude' : 'gemini',
+            enhanceCriticalSections: true,
+          }
+        );
+        
+        protocol = protocolResult.result;
+        processingMetadata.protocolProcessing = protocolResult.metadata;
+        
+        logInfo('Protocol processed with hybrid approach', { 
           studyTitle: protocol.studyTitle,
           protocolNumber: protocol.protocolNumber,
+          modelUsage: protocolResult.metadata.modelUsage,
+          enhancedSections: protocolResult.metadata.enhancedSections,
+        });
+        
+        // Process CRF with hybrid approach
+        const crfResult = await hybridProcessor.processCRF(crfText, 'CRF');
+        crfs = crfResult.result;
+        processingMetadata.crfProcessing = crfResult.metadata;
+        
+      } else {
+        // Original single-model processing
+        const useGemini = options.preferredProvider === 'gemini' || 
+                         options.preferredProvider !== 'anthropic';
+        
+        const aiClient = useGemini ? geminiClient : anthropicClient;
+        const providerName = useGemini ? 'Gemini' : 'Anthropic';
+        
+        logInfo(`Using ${providerName} for document processing`, {
+          protocolLength: protocolText.length,
+          crfLength: crfText.length,
+        });
+        
+        // Process protocol with fallback
+        try {
+          protocol = await aiClient.processProtocol(protocolText);
+          logInfo(`Protocol processed successfully with ${providerName}`, { 
+            studyTitle: protocol.studyTitle,
+            protocolNumber: protocol.protocolNumber,
         });
       } catch (error) {
         if (useGemini) {
@@ -77,12 +119,11 @@ export class ClinicalProcessor {
       }
       
       // Process CRFs with fallback
-      let crfs: CRFSpecification[];
       try {
         crfs = await aiClient.processCRF(crfText);
         logInfo(`CRFs processed successfully with ${providerName}`, { 
-          formCount: crfs.length,
-          forms: crfs.map(crf => crf.formName),
+          formCount: crfs?.length || 0,
+          forms: (crfs || []).map(crf => crf.formName),
         });
       } catch (error) {
         if (useGemini) {
@@ -94,20 +135,38 @@ export class ClinicalProcessor {
           throw error;
         }
       }
+      } // End of else block for non-hybrid processing
       
       // Generate risk assessment if requested
       let riskAssessment;
       if (options.includeRiskAssessment) {
-        try {
-          riskAssessment = await aiClient.generateRiskAssessment(protocol, crfs);
-          logInfo(`Risk assessment generated with ${providerName}`);
-        } catch (error) {
-          if (useGemini) {
-            logInfo('Gemini failed, falling back to Anthropic for risk assessment');
+        if (useHybrid) {
+          // For hybrid, prefer Claude for risk assessment (expertise in safety)
+          try {
             riskAssessment = await anthropicClient.generateRiskAssessment(protocol, crfs);
-            logInfo('Risk assessment generated with Anthropic fallback');
-          } else {
-            throw error;
+            logInfo('Risk assessment generated with Claude (hybrid mode)');
+          } catch (error) {
+            logInfo('Claude failed, falling back to Gemini for risk assessment');
+            riskAssessment = await geminiClient.generateRiskAssessment(protocol, crfs);
+            logInfo('Risk assessment generated with Gemini fallback');
+          }
+        } else {
+          // Original single-model approach
+          const useGeminiForRisk = options.preferredProvider === 'gemini' || options.preferredProvider !== 'anthropic';
+          const aiClient = useGeminiForRisk ? geminiClient : anthropicClient;
+          const providerName = useGeminiForRisk ? 'Gemini' : 'Anthropic';
+          
+          try {
+            riskAssessment = await aiClient.generateRiskAssessment(protocol, crfs);
+            logInfo(`Risk assessment generated with ${providerName}`);
+          } catch (error) {
+            if (useGeminiForRisk) {
+              logInfo('Gemini failed, falling back to Anthropic for risk assessment');
+              riskAssessment = await anthropicClient.generateRiskAssessment(protocol, crfs);
+              logInfo('Risk assessment generated with Anthropic fallback');
+            } else {
+              throw error;
+            }
           }
         }
       }
@@ -115,22 +174,45 @@ export class ClinicalProcessor {
       // Generate timeline if requested
       let timeline;
       if (options.includeTimeline) {
-        try {
-          timeline = await aiClient.generateTimeline(
-            protocol,
-            protocol.population.targetEnrollment || 100
-          );
-          logInfo(`Timeline generated with ${providerName}`);
-        } catch (error) {
-          if (useGemini) {
-            logInfo('Gemini failed, falling back to Anthropic for timeline');
+        if (useHybrid) {
+          // For hybrid, use Gemini for timeline (good at structured data)
+          try {
+            timeline = await geminiClient.generateTimeline(
+              protocol,
+              protocol.population?.targetEnrollment || 100
+            );
+            logInfo('Timeline generated with Gemini (hybrid mode)');
+          } catch (error) {
+            logInfo('Gemini failed, falling back to Claude for timeline');
             timeline = await anthropicClient.generateTimeline(
               protocol,
-              protocol.population.targetEnrollment || 100
+              protocol.population?.targetEnrollment || 100
             );
-            logInfo('Timeline generated with Anthropic fallback');
-          } else {
-            throw error;
+            logInfo('Timeline generated with Claude fallback');
+          }
+        } else {
+          // Original single-model approach
+          const useGeminiForTimeline = options.preferredProvider === 'gemini' || options.preferredProvider !== 'anthropic';
+          const aiClient = useGeminiForTimeline ? geminiClient : anthropicClient;
+          const providerName = useGeminiForTimeline ? 'Gemini' : 'Anthropic';
+          
+          try {
+            timeline = await aiClient.generateTimeline(
+              protocol,
+              protocol.population?.targetEnrollment || 100
+            );
+            logInfo(`Timeline generated with ${providerName}`);
+          } catch (error) {
+            if (useGeminiForTimeline) {
+              logInfo('Gemini failed, falling back to Anthropic for timeline');
+              timeline = await anthropicClient.generateTimeline(
+                protocol,
+                protocol.population?.targetEnrollment || 100
+              );
+              logInfo('Timeline generated with Anthropic fallback');
+            } else {
+              throw error;
+            }
           }
         }
       }
@@ -146,6 +228,7 @@ export class ClinicalProcessor {
           processingTime,
           version: '1.0.0',
           timestamp: new Date(),
+          ...(useHybrid && processingMetadata ? { hybridProcessing: processingMetadata } : {}),
         },
       };
     } catch (error) {
@@ -174,8 +257,8 @@ export class ClinicalProcessor {
    * Analyze CRF complexity for resource planning
    */
   analyzeCRFComplexity(crfs: CRFSpecification[], protocol?: StudyProtocol): StudyComplexity {
-    const totalFields = crfs.reduce((sum, crf) => sum + crf.fields.length, 0);
-    const avgFields = crfs.length > 0 ? Math.round(totalFields / crfs.length) : 0;
+    const totalFields = (crfs || []).reduce((sum, crf) => sum + (crf.fields?.length || 0), 0);
+    const avgFields = (crfs?.length || 0) > 0 ? Math.round(totalFields / crfs.length) : 0;
     
     const numberOfVisits = protocol?.visitSchedule?.length || 0;
     const numberOfPrimaryEndpoints = protocol?.endpoints?.primary?.length || 0;
@@ -200,7 +283,7 @@ export class ClinicalProcessor {
       numberOfPrimaryEndpoints,
       numberOfSecondaryEndpoints,
       hasExploratoryEndpoints,
-      numberOfCRFs: crfs.length,
+      numberOfCRFs: crfs?.length || 0,
       avgFieldsPerCRF: avgFields,
       crfComplexityScore,
       protocolComplexityScore,
@@ -267,23 +350,25 @@ export class ClinicalProcessor {
    * Calculate complexity score for CRFs
    */
   private calculateComplexityScore(crfs: CRFSpecification[]): number {
+    if (!crfs || crfs.length === 0) return 0;
+    
     let score = 0;
     
     // Factor 1: Number of forms (normalized)
     score += Math.min(crfs.length / 20, 1) * 0.2;
     
     // Factor 2: Average fields per form
-    const avgFields = crfs.reduce((sum, crf) => sum + crf.fields.length, 0) / crfs.length;
+    const totalFields = crfs.reduce((sum, crf) => sum + (crf.fields?.length || 0), 0);
+    const avgFields = totalFields / crfs.length;
     score += Math.min(avgFields / 50, 1) * 0.3;
     
     // Factor 3: Validation complexity
-    const validatedFields = crfs.flatMap(crf => crf.fields).filter(f => f.validation).length;
-    const totalFields = crfs.reduce((sum, crf) => sum + crf.fields.length, 0);
-    score += (validatedFields / totalFields) * 0.3;
+    const validatedFields = crfs.flatMap(crf => crf.fields || []).filter(f => f?.validation).length;
+    score += totalFields > 0 ? (validatedFields / totalFields) * 0.3 : 0;
     
     // Factor 4: Field type diversity
     const fieldTypes = new Set(
-      crfs.flatMap(crf => crf.fields).map(f => f.fieldType)
+      crfs.flatMap(crf => crf.fields || []).map(f => f?.fieldType).filter(Boolean)
     ).size;
     score += Math.min(fieldTypes / 6, 1) * 0.2;
     
@@ -310,7 +395,7 @@ export class ClinicalProcessor {
     
     // Factor 3: Study design complexity
     const hasMultipleArms = (protocol.studyDesign?.numberOfArms || 1) > 1;
-    const isBlinded = protocol.studyDesign?.type.includes('blind');
+    const isBlinded = protocol.studyDesign?.type?.includes('blind') || false;
     score += (hasMultipleArms ? 0.2 : 0) + (isBlinded ? 0.2 : 0);
     
     return score;

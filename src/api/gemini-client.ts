@@ -3,6 +3,7 @@ import { config } from '../core/config';
 import { createModuleLogger, measurePerformance } from '../utils/logger';
 import { handleExternalAPIError } from '../utils/error-handler';
 import { StudyProtocol, CRFSpecification, RiskAssessmentResult, TimelineResult } from '../types';
+import { APIResponseValidator } from '../utils/api-response-validator';
 
 const logger = createModuleLogger('gemini-client');
 
@@ -176,24 +177,110 @@ Ensure all medical terminology is accurate and follow ICH-GCP guidelines for dat
         const text = response.response.text();
         
         try {
-          // Extract JSON from the response
-          const jsonMatch = text.match(/```json\n([\s\S]*?)\n```/);
-          const jsonText = jsonMatch ? jsonMatch[1] : text;
+          // Use the validator to parse and validate the response
+          const protocol = APIResponseValidator.parseAndValidate(
+            text,
+            APIResponseValidator.validateStudyProtocol,
+            this.createFallbackProtocol() // Fallback if parsing fails
+          );
           
-          // Clean up any markdown or extra text
-          const cleanJson = jsonText.trim().replace(/^[^{]*/, '').replace(/[^}]*$/, '');
-          const parsedData = JSON.parse(cleanJson);
-          
-          logger.info('Protocol processed successfully with Gemini');
-          return this.mapToStudyProtocol(parsedData);
+          logger.info('Protocol processed and validated successfully with Gemini');
+          return protocol;
         } catch (parseError) {
           logger.error('Failed to parse protocol response from Gemini', { error: parseError });
-          throw new Error('Failed to parse protocol analysis results');
+          throw new Error(`Failed to parse protocol analysis results: ${(parseError as Error).message}`);
         }
       } catch (error) {
         throw handleExternalAPIError(error, 'Gemini');
       }
     });
+  }
+
+  /**
+   * Create a fallback protocol structure
+   */
+  private createFallbackProtocol(): StudyProtocol {
+    return {
+      studyTitle: 'Clinical Study (Title Not Extracted)',
+      protocolNumber: 'PROTO-001',
+      studyPhase: 'Phase 3',
+      investigationalDrug: 'Not specified',
+      sponsor: 'Sponsor Name Not Extracted',
+      indication: 'Not specified',
+      studyDesign: {
+        type: 'open-label',
+        duration: 'Not specified',
+        numberOfArms: 1,
+        description: 'Study design not specified'
+      },
+      objectives: {
+        primary: [{ 
+          description: 'Primary objectives not extracted',
+          endpoints: ['Primary endpoints not extracted']
+        }],
+        secondary: [],
+        exploratory: []
+      },
+      population: {
+        targetEnrollment: 100,
+        ageRange: '18 years and above',
+        gender: 'all',
+        condition: 'Not specified'
+      },
+      endpoints: {
+        primary: [{
+          name: 'Primary endpoint not extracted',
+          description: 'Primary endpoint not extracted',
+          timepoint: 'Not specified',
+          method: 'Not specified'
+        }],
+        secondary: [],
+        exploratory: []
+      },
+      visitSchedule: [{
+        visitName: 'Baseline',
+        visitNumber: 1,
+        timepoint: 'Day 0',
+        window: '± 0 days',
+        procedures: []
+      }],
+      inclusionCriteria: ['Inclusion criteria not extracted'],
+      exclusionCriteria: ['Exclusion criteria not extracted']
+    };
+  }
+
+  /**
+   * Create fallback CRF specifications
+   */
+  private createFallbackCRFs(): CRFSpecification[] {
+    return [{
+      formName: 'Demographics',
+      formOID: 'DM',
+      version: '1.0',
+      fields: [
+        {
+          fieldName: 'Subject ID',
+          fieldOID: 'SUBJID',
+          fieldType: 'text',
+          required: true,
+          cdiscMapping: {
+            domain: 'DM',
+            variable: 'USUBJID'
+          }
+        },
+        {
+          fieldName: 'Date of Birth',
+          fieldOID: 'BRTHDTC',
+          fieldType: 'date',
+          required: true,
+          cdiscMapping: {
+            domain: 'DM',
+            variable: 'BRTHDTC'
+          }
+        }
+      ],
+      lastUpdated: new Date()
+    }];
   }
   
   /**
@@ -251,84 +338,25 @@ Keep response concise. Return ONLY valid JSON:
         try {
           logger.info('CRF API response received from Gemini', { responseLength: text.length });
           
-          // Try to extract JSON from code blocks first
-          const jsonMatch = text.match(/```json\n([\s\S]*?)\n```/);
-          let jsonText = jsonMatch ? jsonMatch[1] : text;
+          // Use the validator to parse and validate the response
+          const crfs = APIResponseValidator.parseAndValidate(
+            text,
+            APIResponseValidator.validateCRFSpecifications,
+            this.createFallbackCRFs() // Fallback if parsing fails
+          );
           
-          // Clean up the text - remove any leading/trailing whitespace and text
-          jsonText = jsonText?.trim() || '';
-          
-          // If it doesn't start with [ or {, try to find the JSON in the response
-          if (!jsonText.startsWith('[') && !jsonText.startsWith('{')) {
-            const jsonStart = text.indexOf('[');
-            const jsonEnd = text.lastIndexOf(']');
-            if (jsonStart !== -1 && jsonEnd !== -1 && jsonEnd > jsonStart) {
-              jsonText = text.substring(jsonStart, jsonEnd + 1);
-            }
-          }
-          
-          // Check if JSON appears to be truncated and try to repair it
-          if (jsonText.endsWith(',') || jsonText.endsWith('"') || !jsonText.endsWith(']')) {
-            logger.warn('JSON appears truncated, attempting to repair');
-            
-            // Try to find the last complete object
-            const lastCompleteObject = jsonText.lastIndexOf('}');
-            if (lastCompleteObject !== -1) {
-              // Truncate at the last complete object and close the array
-              jsonText = jsonText.substring(0, lastCompleteObject + 1) + ']';
-            } else {
-              // If no complete object found, create a minimal valid structure
-              jsonText = '[{"formName": "Extracted Form", "formOID": "FORM01", "version": "1.0", "fields": []}]';
-              logger.warn('Created minimal CRF structure due to parsing issues');
-            }
-          }
-          
-          logger.info('Attempting to parse CRF JSON from Gemini', { 
-            jsonLength: jsonText.length,
-            startsWithBracket: jsonText.startsWith('['),
-            startsWithBrace: jsonText.startsWith('{')
+          logger.info('CRF processed and validated successfully with Gemini', { 
+            formCount: crfs.length 
           });
-          
-          const parsedData = JSON.parse(jsonText);
-          
-          logger.info('CRF processed successfully with Gemini');
-          return Array.isArray(parsedData) ? parsedData : [parsedData];
+          return crfs;
         } catch (parseError) {
           logger.error('Failed to parse CRF response from Gemini', { 
             error: parseError,
             responseText: text.substring(0, 2000) + '...' // Log first 2000 chars to see more context
           });
           
-          // As a fallback, create a basic CRF structure
-          logger.warn('Creating fallback CRF structure');
-          return [{
-            formName: "Visit Details",
-            formOID: "VD01", 
-            version: "1.0",
-            lastUpdated: new Date(),
-            fields: [
-              {
-                fieldName: "Site ID",
-                fieldOID: "SITEID",
-                fieldType: "text" as const,
-                required: true,
-                cdiscMapping: {
-                  domain: "DM",
-                  variable: "SITEID"
-                }
-              },
-              {
-                fieldName: "Subject Number", 
-                fieldOID: "SUBJNUM",
-                fieldType: "text" as const,
-                required: true,
-                cdiscMapping: {
-                  domain: "DM", 
-                  variable: "SUBJID"
-                }
-              }
-            ]
-          }];
+          // Re-throw to let withRetry handle it
+          throw new Error(`Failed to parse CRF response: ${(parseError as Error).message}`);
         }
       } catch (error) {
         throw handleExternalAPIError(error, 'Gemini');
@@ -455,6 +483,19 @@ Return ONLY valid JSON in this format:
   }
   
   /**
+   * Generic content generation method for DMP sections
+   */
+  async generateContent(prompt: string): Promise<string> {
+    return this.withRetry(async () => {
+      await this.enforceRateLimit();
+      
+      const model = this.client.getGenerativeModel({ model: "gemini-1.5-pro" });
+      const response = await model.generateContent(prompt);
+      return response.response.text();
+    });
+  }
+
+  /**
    * Map parsed data to StudyProtocol type
    */
   private mapToStudyProtocol(data: any): StudyProtocol {
@@ -485,7 +526,7 @@ Return ONLY valid JSON in this format:
       let jsonText = jsonMatch ? jsonMatch[1] : text;
       
       // Clean up any markdown or extra text
-      jsonText = jsonText.trim().replace(/^[^{]*/, '').replace(/[^}]*$/, '');
+      jsonText = (jsonText || '').trim().replace(/^[^{]*/, '').replace(/[^}]*$/, '');
       
       if (jsonText.startsWith('{')) {
         const parsed = JSON.parse(jsonText);
@@ -532,7 +573,7 @@ Return ONLY valid JSON in this format:
       let jsonText = jsonMatch ? jsonMatch[1] : text;
       
       // Clean up any markdown or extra text
-      jsonText = jsonText.trim().replace(/^[^{]*/, '').replace(/[^}]*$/, '');
+      jsonText = (jsonText || '').trim().replace(/^[^{]*/, '').replace(/[^}]*$/, '');
       
       if (jsonText.startsWith('{')) {
         const parsed = JSON.parse(jsonText);
@@ -580,7 +621,7 @@ Return ONLY valid JSON in this format:
     const lines = text.split('\n');
     
     for (let i = 0; i < lines.length; i++) {
-      const line = lines[i].trim();
+      const line = lines[i]?.trim() || '';
       
       // Look for risk patterns like "1. Risk description"
       const riskMatch = line.match(/^\d+\.\s*(.+)/);

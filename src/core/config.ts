@@ -37,7 +37,7 @@ const ConfigSchema = z.object({
   
   // Security
   enableCors: z.boolean().default(true),
-  allowedOrigins: z.array(z.string()).default(['http://localhost:3000']),
+  allowedOrigins: z.array(z.string()).default(['http://localhost:3000', 'http://localhost:3001']),
   
   // Logging
   logLevel: z.enum(['error', 'warn', 'info', 'debug']).default('info'),

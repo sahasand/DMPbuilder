@@ -6,9 +6,9 @@ import { markdownExporter } from '../exporters/markdown-exporter';
 import { pdfExporter } from '../exporters/pdf-exporter';
 import { wordExporter } from '../exporters/word-exporter';
 import { complianceValidator } from '../validators/compliance-validator';
-import { dataValidator } from '../validators/data-validator';
-import { config } from '../core/config';
-import { logInfo, logError } from '../utils/logger';
+// import { dataValidator } from '../validators/data-validator';
+// import { config } from '../core/config';
+import { logError } from '../utils/logger';
 import fs from 'fs/promises';
 import path from 'path';
 import chalk from 'chalk';
@@ -142,7 +142,7 @@ async function validateInputs() {
 /**
  * Perform data validation
  */
-async function performValidation(dmp: any) {
+async function performValidation(_dmp: any) {
   const spinner = ora('Running data validation...').start();
   
   try {

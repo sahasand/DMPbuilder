@@ -13,6 +13,7 @@ import {
 import { createModuleLogger, logInfo } from '../utils/logger';
 import { clinicalProcessor } from '../api/clinical-processor';
 import { config, clinicalStandards, dataManagementConfig } from '../core/config';
+import { AIContentGenerator, SectionContext, ContentGenerationOptions } from './ai-content-generator';
 
 const logger = createModuleLogger('dmp-generator');
 
@@ -21,9 +22,17 @@ export interface DMPGenerationOptions {
   includeTimeline?: boolean;
   customSections?: DMPSection[];
   approvers?: Approval[];
+  useAIGeneration?: boolean;
+  aiOptions?: ContentGenerationOptions;
 }
 
 export class DMPGenerator {
+  private aiContentGenerator: AIContentGenerator;
+  
+  constructor() {
+    this.aiContentGenerator = new AIContentGenerator();
+  }
+  
   private standardAbbreviations: Abbreviation[] = [
     { abbreviation: 'AE', definition: 'Adverse Event' },
     { abbreviation: 'CCG', definition: 'CRF completion guidelines' },
@@ -108,38 +117,70 @@ export class DMPGenerator {
   ): Promise<DMPSection[]> {
     const sections: DMPSection[] = [];
     
-    // 1. Overview of Project
-    sections.push(this.generateOverviewSection(protocol));
+    // Check if AI generation is enabled
+    const useAI = options.useAIGeneration !== false; // Default to true
     
-    // 2. Roles and Responsibilities
-    sections.push(this.generateRolesSection());
-    
-    // 3. Network Directories
-    sections.push(this.generateDirectoriesSection());
-    
-    // 4. EDC System
-    sections.push(this.generateEDCSection(crfs));
-    
-    // 5. Data Cleaning Plan
-    sections.push(this.generateDataCleaningSection());
-    
-    // 6. Reporting of AEs and SAEs
-    sections.push(this.generateAEReportingSection());
-    
-    // 7. Medical Coding Process
-    sections.push(this.generateMedicalCodingSection());
-    
-    // 8. Clinical Data Management Tasks
-    sections.push(this.generateCDMTasksSection());
-    
-    // 9. Protocol Deviation
-    sections.push(this.generateProtocolDeviationSection());
-    
-    // 10. Database Lock
-    sections.push(this.generateDatabaseLockSection());
-    
-    // 11. Appendix
-    sections.push(this.generateAppendixSection(protocol, crfs));
+    if (useAI) {
+      // Generate sections with AI enhancement
+      const context: SectionContext = {
+        protocol,
+        crfs,
+        studyMetadata: AIContentGenerator.analyzeStudyContext(protocol, crfs),
+        crossReferences: []
+      };
+      
+      logInfo('Generating DMP sections with AI enhancement', {
+        therapeuticArea: context.studyMetadata.therapeuticArea,
+        complexity: context.studyMetadata.complexity,
+        riskLevel: context.studyMetadata.riskLevel
+      });
+      
+      // 1. Overview of Project (AI-enhanced)
+      sections.push(await this.aiContentGenerator.generateOverviewSection(context, options.aiOptions));
+      
+      // 2. Roles and Responsibilities (Template-based)
+      sections.push(this.generateRolesSection());
+      
+      // 3. Network Directories (Template-based)
+      sections.push(this.generateDirectoriesSection());
+      
+      // 4. EDC System (Template-based)
+      sections.push(this.generateEDCSection(crfs));
+      
+      // 5. Data Cleaning Plan (AI-enhanced)
+      sections.push(await this.aiContentGenerator.generateDataManagementSection(context, options.aiOptions));
+      
+      // 6. Reporting of AEs and SAEs (AI-enhanced)
+      sections.push(await this.aiContentGenerator.generateSafetyReportingSection(context, options.aiOptions));
+      
+      // 7. Medical Coding Process (AI-enhanced)
+      sections.push(await this.aiContentGenerator.generateMedicalCodingSection(context, options.aiOptions));
+      
+      // 8. Clinical Data Management Tasks (Template-based)
+      sections.push(this.generateCDMTasksSection());
+      
+      // 9. Protocol Deviation (Template-based)
+      sections.push(this.generateProtocolDeviationSection());
+      
+      // 10. Database Lock (Template-based)
+      sections.push(this.generateDatabaseLockSection());
+      
+      // 11. Appendix (Template-based)
+      sections.push(this.generateAppendixSection(protocol, crfs));
+    } else {
+      // Original template-based generation
+      sections.push(this.generateOverviewSection(protocol));
+      sections.push(this.generateRolesSection());
+      sections.push(this.generateDirectoriesSection());
+      sections.push(this.generateEDCSection(crfs));
+      sections.push(this.generateDataCleaningSection());
+      sections.push(this.generateAEReportingSection());
+      sections.push(this.generateMedicalCodingSection());
+      sections.push(this.generateCDMTasksSection());
+      sections.push(this.generateProtocolDeviationSection());
+      sections.push(this.generateDatabaseLockSection());
+      sections.push(this.generateAppendixSection(protocol, crfs));
+    }
     
     // Add custom sections if provided
     if (options.customSections) {
@@ -175,7 +216,7 @@ export class DMPGenerator {
         {
           sectionNumber: '1.3',
           title: 'Study Population',
-          content: `Approximately ${protocol.population.targetEnrollment} ${protocol.population.ageRange} ${protocol.population.gender === 'all' ? 'adults' : protocol.population.gender} with ${protocol.indication} are planned to enroll.`,
+          content: `Approximately ${protocol.population?.targetEnrollment || 100} ${protocol.population?.ageRange || '18 years and above'} ${protocol.population?.gender === 'all' ? 'adults' : protocol.population?.gender || 'adults'} with ${protocol.indication} are planned to enroll.`,
           subsections: [],
         },
         {
@@ -521,17 +562,21 @@ export class DMPGenerator {
   
   private formatStudyDesign(protocol: StudyProtocol): string {
     const design = protocol.studyDesign;
-    let content = `This is a ${design.type} study`;
+    if (!design) {
+      return 'Study design information not available.';
+    }
+    
+    let content = `This is a ${design.type || 'clinical'} study`;
     
     if (design.duration) {
       content += ` with a duration of ${design.duration}`;
     }
     
-    if (design.numberOfArms > 1) {
+    if ((design.numberOfArms || 1) > 1) {
       content += ` with ${design.numberOfArms} treatment arms`;
     }
     
-    content += '.\n\n' + design.description;
+    content += '.\n\n' + (design.description || 'No additional design description available.');
     
     if (design.parts && design.parts.length > 0) {
       content += '\n\n**Study Parts:**\n';
@@ -563,7 +608,7 @@ export class DMPGenerator {
     
     // Primary Objectives
     content += '#### Primary Objectives\n';
-    protocol.objectives.primary.forEach(obj => {
+    (protocol.objectives?.primary || []).forEach(obj => {
       // Handle both string and object formats
       if (typeof obj === 'string') {
         content += `- ${obj}\n`;
@@ -579,9 +624,9 @@ export class DMPGenerator {
     });
     
     // Secondary Objectives
-    if (protocol.objectives.secondary && protocol.objectives.secondary.length > 0) {
+    if (protocol.objectives?.secondary && protocol.objectives.secondary.length > 0) {
       content += '\n#### Secondary Objectives\n';
-      protocol.objectives.secondary.forEach(obj => {
+      (protocol.objectives.secondary || []).forEach(obj => {
         // Handle both string and object formats
         if (typeof obj === 'string') {
           content += `- ${obj}\n`;
@@ -598,9 +643,9 @@ export class DMPGenerator {
     }
     
     // Exploratory Objectives
-    if (protocol.objectives.exploratory && protocol.objectives.exploratory.length > 0) {
+    if (protocol.objectives?.exploratory && protocol.objectives.exploratory.length > 0) {
       content += '\n#### Exploratory Objectives\n';
-      protocol.objectives.exploratory.forEach(obj => {
+      (protocol.objectives.exploratory || []).forEach(obj => {
         // Handle both string and object formats
         if (typeof obj === 'string') {
           content += `- ${obj}\n`;
@@ -650,19 +695,19 @@ export class DMPGenerator {
   }
   
   private formatCRFComplexity(analysis: Record<string, any>): string {
-    const totalForms = analysis.totalForms || 0;
-    const totalFields = analysis.totalFields || 0;
-    const requiredFields = analysis.requiredFields || 0;
-    const optionalFields = analysis.optionalFields || 0;
-    const cdiscCoverage = analysis.cdiscCoverage || 0;
-    const complexity = analysis.complexity || 0;
-    const fieldTypes = analysis.fieldTypes || {};
+    const totalForms = analysis?.totalForms ?? 0;
+    const totalFields = analysis?.totalFields ?? 0;
+    const requiredFields = analysis?.requiredFields ?? 0;
+    const optionalFields = analysis?.optionalFields ?? 0;
+    const cdiscCoverage = analysis?.cdiscCoverage ?? 0;
+    const complexity = analysis?.complexity ?? 0;
+    const fieldTypes = analysis?.fieldTypes || {};
 
     return `- **Total Forms**: ${totalForms}
 - **Total Fields**: ${totalFields} (${requiredFields} required, ${optionalFields} optional)
-- **CDISC Coverage**: ${cdiscCoverage.toFixed(1)}%
-- **Complexity Score**: ${(complexity * 100).toFixed(0)}%
-- **Field Types**: ${Object.entries(fieldTypes).map(([type, count]) => `${type} (${count})`).join(', ')}`;
+- **CDISC Coverage**: ${(cdiscCoverage ?? 0).toFixed(1)}%
+- **Complexity Score**: ${((complexity ?? 0) * 100).toFixed(0)}%
+- **Field Types**: ${Object.entries(fieldTypes || {}).map(([type, count]) => `${type} (${count})`).join(', ')}`;
   }
   
   private generateLabNormalRanges(): string {
@@ -784,7 +829,7 @@ export class DMPGenerator {
     });
     
     // Add CRF-specific reviews
-    crfs.slice(0, 5).forEach(crf => {
+    (crfs || []).slice(0, 5).forEach(crf => {
       content += `\n| ${crf.formName} | All Fields | Ensure completeness and consistency | CRA/DM |`;
     });
     

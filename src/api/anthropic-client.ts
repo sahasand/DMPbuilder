@@ -3,6 +3,7 @@ import { config } from '../core/config';
 import { createModuleLogger, measurePerformance } from '../utils/logger';
 import { handleExternalAPIError } from '../utils/error-handler';
 import { StudyProtocol, CRFSpecification, RiskAssessmentResult, TimelineResult } from '../types';
+import { APIResponseValidator } from '../utils/api-response-validator';
 
 const logger = createModuleLogger('anthropic-client');
 
@@ -10,12 +11,16 @@ export class AnthropicClient {
   private client: Anthropic;
   private requestCount = 0;
   private lastRequestTime = 0;
+  private model: string = 'claude-3-5-sonnet-20241022'; // Latest Claude 3.5 Sonnet
   
-  constructor() {
+  constructor(modelOverride?: string) {
     this.client = new Anthropic({
       apiKey: config.anthropicApiKey,
       timeout: config.apiTimeout,
     });
+    if (modelOverride) {
+      this.model = modelOverride;
+    }
   }
   
   /**
@@ -129,7 +134,7 @@ Ensure all medical terminology is accurate and follow ICH-GCP guidelines for dat
           'anthropic.processProtocol',
           async () => {
             return await this.client.messages.create({
-              model: 'claude-3-opus-20240229',
+              model: this.model,
               max_tokens: 4096,
               temperature: 0,
               system: 'You are a clinical data management expert with extensive knowledge of ICH-GCP, FDA, and EMA guidelines. Provide accurate, structured clinical information.',
@@ -147,16 +152,18 @@ Ensure all medical terminology is accurate and follow ICH-GCP guidelines for dat
         const content = response.content[0];
         if (content?.type === 'text') {
           try {
-            // Extract JSON from the response
-            const jsonMatch = content.text.match(/```json\n([\s\S]*?)\n```/);
-            const jsonText = jsonMatch ? jsonMatch[1] : content.text;
-            const parsedData = JSON.parse(jsonText);
+            // Use the validator to parse and validate the response
+            const protocol = APIResponseValidator.parseAndValidate(
+              content.text,
+              APIResponseValidator.validateStudyProtocol,
+              this.createFallbackProtocol() // Fallback if parsing fails
+            );
             
-            logger.info('Protocol processed successfully');
-            return this.mapToStudyProtocol(parsedData);
+            logger.info('Protocol processed and validated successfully');
+            return protocol;
           } catch (parseError) {
             logger.error('Failed to parse protocol response', { error: parseError });
-            throw new Error('Failed to parse protocol analysis results');
+            throw new Error(`Failed to parse protocol analysis results: ${(parseError as Error).message}`);
           }
         }
         
@@ -167,6 +174,59 @@ Ensure all medical terminology is accurate and follow ICH-GCP guidelines for dat
     });
   }
   
+  /**
+   * Create a fallback protocol structure
+   */
+  private createFallbackProtocol(): StudyProtocol {
+    return {
+      studyTitle: 'Clinical Study (Title Not Extracted)',
+      protocolNumber: 'PROTO-001',
+      studyPhase: 'Phase 3',
+      investigationalDrug: 'Not specified',
+      sponsor: 'Sponsor Name Not Extracted',
+      indication: 'Not specified',
+      studyDesign: {
+        type: 'open-label',
+        duration: 'Not specified',
+        numberOfArms: 1,
+        description: 'Study design not specified'
+      },
+      objectives: {
+        primary: [{ 
+          description: 'Primary objectives not extracted',
+          endpoints: ['Primary endpoints not extracted']
+        }],
+        secondary: [],
+        exploratory: []
+      },
+      population: {
+        targetEnrollment: 100,
+        ageRange: '18 years and above',
+        gender: 'all',
+        condition: 'Not specified'
+      },
+      endpoints: {
+        primary: [{
+          name: 'Primary endpoint not extracted',
+          description: 'Primary endpoint not extracted',
+          timepoint: 'Not specified',
+          method: 'Not specified'
+        }],
+        secondary: [],
+        exploratory: []
+      },
+      visitSchedule: [{
+        visitName: 'Baseline',
+        visitNumber: 1,
+        timepoint: 'Day 0',
+        window: '± 0 days',
+        procedures: []
+      }],
+      inclusionCriteria: ['Inclusion criteria not extracted'],
+      exclusionCriteria: ['Exclusion criteria not extracted']
+    };
+  }
+
   /**
    * Process CRF specifications
    */
@@ -221,7 +281,7 @@ Do not include any text before or after the JSON. Only return the JSON array.`;
           'anthropic.processCRF',
           async () => {
             return await this.client.messages.create({
-              model: 'claude-3-opus-20240229',
+              model: this.model,
               max_tokens: 4096,
               temperature: 0,
               system: 'You are a clinical data standards expert with deep knowledge of CDISC SDTM, CDASH, and clinical data collection best practices.',
@@ -241,32 +301,17 @@ Do not include any text before or after the JSON. Only return the JSON array.`;
           try {
             logger.info('CRF API response received', { responseLength: content.text.length });
             
-            // Try to extract JSON from code blocks first
-            const jsonMatch = content.text.match(/```json\n([\s\S]*?)\n```/);
-            let jsonText = jsonMatch ? jsonMatch[1] : content.text;
+            // Use the validator to parse and validate the response
+            const crfs = APIResponseValidator.parseAndValidate(
+              content.text,
+              APIResponseValidator.validateCRFSpecifications,
+              this.createFallbackCRFs() // Fallback if parsing fails
+            );
             
-            // Clean up the text - remove any leading/trailing whitespace and text
-            jsonText = jsonText?.trim() || '';
-            
-            // If it doesn't start with [ or {, try to find the JSON in the response
-            if (!jsonText.startsWith('[') && !jsonText.startsWith('{')) {
-              const jsonStart = content.text.indexOf('[');
-              const jsonEnd = content.text.lastIndexOf(']');
-              if (jsonStart !== -1 && jsonEnd !== -1 && jsonEnd > jsonStart) {
-                jsonText = content.text.substring(jsonStart, jsonEnd + 1);
-              }
-            }
-            
-            logger.info('Attempting to parse CRF JSON', { 
-              jsonLength: jsonText.length,
-              startsWithBracket: jsonText.startsWith('['),
-              startsWithBrace: jsonText.startsWith('{')
+            logger.info('CRF processed and validated successfully', { 
+              formCount: crfs.length 
             });
-            
-            const parsedData = JSON.parse(jsonText);
-            
-            logger.info('CRF processed successfully');
-            return Array.isArray(parsedData) ? parsedData : [parsedData];
+            return crfs;
           } catch (parseError) {
             logger.error('Failed to parse CRF response', { 
               error: parseError,
@@ -281,6 +326,40 @@ Do not include any text before or after the JSON. Only return the JSON array.`;
         throw handleExternalAPIError(error, 'Anthropic');
       }
     });
+  }
+
+  /**
+   * Create fallback CRF specifications
+   */
+  private createFallbackCRFs(): CRFSpecification[] {
+    return [{
+      formName: 'Demographics',
+      formOID: 'DM',
+      version: '1.0',
+      fields: [
+        {
+          fieldName: 'Subject ID',
+          fieldOID: 'SUBJID',
+          fieldType: 'text',
+          required: true,
+          cdiscMapping: {
+            domain: 'DM',
+            variable: 'USUBJID'
+          }
+        },
+        {
+          fieldName: 'Date of Birth',
+          fieldOID: 'BRTHDTC',
+          fieldType: 'date',
+          required: true,
+          cdiscMapping: {
+            domain: 'DM',
+            variable: 'BRTHDTC'
+          }
+        }
+      ],
+      lastUpdated: new Date()
+    }];
   }
   
   /**
@@ -374,7 +453,7 @@ Consider typical timelines for ${protocol.studyPhase} studies in ${protocol.indi
       
       try {
         const response = await this.client.messages.create({
-          model: 'claude-3-opus-20240229',
+          model: this.model,
           max_tokens: 1024,
           temperature: 0.1,
           system: 'You are a clinical trial timeline expert. Provide realistic timelines based on industry standards and best practices.',
@@ -514,7 +593,7 @@ Consider typical timelines for ${protocol.studyPhase} studies in ${protocol.indi
     const lines = text.split('\n');
     
     for (let i = 0; i < lines.length; i++) {
-      const line = lines[i].trim();
+      const line = lines[i]?.trim() || '';
       
       // Look for risk patterns like "1. Risk description"
       const riskMatch = line.match(/^\d+\.\s*(.+)/);
@@ -633,6 +712,103 @@ Consider typical timelines for ${protocol.studyPhase} studies in ${protocol.indi
    */
   private identifyCriticalPath(milestones: import('../types').Timeline[]): string[] {
     return milestones.map(m => m.milestone);
+  }
+
+  /**
+   * Enhanced section processing for critical clinical content
+   * Used in hybrid processing pipeline for high-quality section enhancement
+   */
+  async enhanceSection(sectionContent: string, sectionType: string, context?: string): Promise<string> {
+    return this.withRetry(async () => {
+      await this.enforceRateLimit();
+
+      const systemPrompt = this.getSystemPromptForSection(sectionType);
+      const prompt = `${context ? `Context from previous sections:\n${context}\n\n` : ''}Enhance and structure the following ${sectionType} section for a clinical Data Management Plan:
+
+${sectionContent}
+
+Provide a comprehensive, well-structured version that:
+1. Follows ICH-GCP and regulatory guidelines
+2. Includes all necessary data management considerations
+3. Addresses data quality, integrity, and compliance requirements
+4. Is clear, specific, and actionable for data management teams`;
+
+      try {
+        const response = await measurePerformance(
+          'anthropic.enhanceSection',
+          async () => {
+            return await this.client.messages.create({
+              model: this.model,
+              max_tokens: 4096,
+              temperature: 0.1,
+              system: systemPrompt,
+              messages: [
+                {
+                  role: 'user',
+                  content: prompt,
+                },
+              ],
+            });
+          },
+          { sectionType, contentLength: sectionContent.length }
+        );
+
+        const content = response.content[0];
+        if (content?.type === 'text') {
+          return content.text;
+        }
+
+        throw new Error('Unexpected response format from API');
+      } catch (error) {
+        throw handleExternalAPIError(error, 'Anthropic');
+      }
+    });
+  }
+
+  /**
+   * Get specialized system prompts for different section types
+   */
+  private getSystemPromptForSection(sectionType: string): string {
+    const prompts: Record<string, string> = {
+      'endpoints': 'You are a clinical endpoints and outcomes expert specializing in data management for clinical trials. Focus on endpoint definitions, data collection methods, derivation rules, and analysis considerations.',
+      'safety': 'You are a clinical safety data management expert with deep knowledge of pharmacovigilance, adverse event coding (MedDRA), and safety reporting requirements per ICH E2A/E2B guidelines.',
+      'regulatory': 'You are a regulatory compliance expert for clinical data management, well-versed in FDA 21 CFR Part 11, EMA guidelines, ICH-GCP, and global regulatory requirements for electronic data.',
+      'statistics': 'You are a clinical biostatistics expert focusing on statistical analysis plans, data requirements for statistical endpoints, and ensuring data quality for valid statistical inference.',
+      'data_standards': 'You are a CDISC standards expert specializing in SDTM, ADaM, and Define-XML implementation for clinical trial data standardization and regulatory submissions.',
+      'inclusion_exclusion': 'You are a clinical trial eligibility expert focusing on operationalizing inclusion/exclusion criteria for data capture, screening logs, and protocol deviation management.',
+      'procedures': 'You are a clinical operations expert specializing in study procedures, visit schedules, and ensuring complete and accurate data collection throughout the trial.',
+      'default': 'You are a senior clinical data management expert with comprehensive knowledge of ICH-GCP, regulatory guidelines, and best practices for ensuring high-quality clinical trial data.'
+    };
+
+    return prompts[sectionType] || prompts['default'];
+  }
+
+  /**
+   * Process multiple sections with intelligent batching
+   */
+  async enhanceMultipleSections(sections: Array<{ content: string; type: string; name: string }>): Promise<Map<string, string>> {
+    const enhanced = new Map<string, string>();
+    
+    // Process critical sections with Claude
+    const criticalSectionTypes = ['endpoints', 'safety', 'regulatory', 'inclusion_exclusion'];
+    
+    for (const section of sections) {
+      if (criticalSectionTypes.includes(section.type)) {
+        try {
+          const enhancedContent = await this.enhanceSection(section.content, section.type);
+          enhanced.set(section.name, enhancedContent);
+        } catch (error) {
+          logger.warn('Failed to enhance section with Claude', { 
+            section: section.name, 
+            error: error instanceof Error ? error.message : 'Unknown error' 
+          });
+          // Fallback to original content
+          enhanced.set(section.name, section.content);
+        }
+      }
+    }
+    
+    return enhanced;
   }
 }
 

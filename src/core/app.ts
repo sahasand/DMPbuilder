@@ -34,13 +34,42 @@ export class ClinicalDMPGenerator {
     this.app.use(express.json({ limit: '50mb' }));
     this.app.use(express.urlencoded({ extended: true, limit: '50mb' }));
     
-    // CORS
-    if (config.enableCors) {
-      this.app.use(cors({
-        origin: config.allowedOrigins,
-        credentials: true,
-      }));
-    }
+    // CORS - Apply to ALL requests
+    this.app.use(cors({
+      origin: function(origin, callback) {
+        // Allow requests with no origin (like mobile apps, curl, Postman)
+        if (!origin) return callback(null, true);
+        
+        // Log for debugging
+        console.log('CORS check - origin:', origin, 'allowed origins:', config.allowedOrigins);
+        
+        if (config.allowedOrigins.indexOf(origin) !== -1) {
+          callback(null, true);
+        } else {
+          console.log('CORS rejected origin:', origin);
+          callback(new Error('Not allowed by CORS'));
+        }
+      },
+      credentials: true,
+      methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+      allowedHeaders: ['Content-Type', 'Authorization', 'Connection'],
+      preflightContinue: false,
+      optionsSuccessStatus: 204
+    }));
+
+    // Fallback CORS headers for all responses
+    this.app.use((req: Request, res: Response, next: NextFunction) => {
+      const origin = req.headers.origin;
+      if (origin && config.allowedOrigins.indexOf(origin) !== -1) {
+        res.header('Access-Control-Allow-Origin', origin);
+      } else if (!origin) {
+        res.header('Access-Control-Allow-Origin', '*');
+      }
+      res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+      res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, Connection');
+      res.header('Access-Control-Allow-Credentials', 'true');
+      next();
+    });
     
     // Request logging
     this.app.use((req: Request, res: Response, next: NextFunction) => {
@@ -58,6 +87,15 @@ export class ClinicalDMPGenerator {
       });
       
       next();
+    });
+    
+    // Handle OPTIONS requests for all routes
+    this.app.options('*', (req: Request, res: Response) => {
+      res.header('Access-Control-Allow-Origin', req.headers.origin || '*');
+      res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+      res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, Connection');
+      res.header('Access-Control-Allow-Credentials', 'true');
+      res.sendStatus(204);
     });
     
     // Health check endpoint
