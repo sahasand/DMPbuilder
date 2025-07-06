@@ -1,0 +1,56 @@
+{
+  "id": "dmp-builder",
+  "name": "Data Management Plan Builder",
+  "version": "1.0.0",
+  "description": "Generates comprehensive data management plans for clinical studies with AI-enhanced content and regulatory compliance",
+  "author": "Clinical DMP Generator Team",
+  "type": "application",
+  "platformVersion": "1.0.0",
+  "config": {
+    "enabled": true,
+    "priority": 1,
+    "therapeuticAreas": ["all"],
+    "studyPhases": ["Phase 1", "Phase 2", "Phase 3", "Phase 4", "Observational"],
+    "settings": {
+      "useAIGeneration": true,
+      "includeRiskAssessment": true,
+      "includeTimeline": true,
+      "enableComplexityAnalysis": true,
+      "aiContentOptions": {
+        "enhanceExistingContent": true,
+        "generateMissingContent": true,
+        "validateMedicalTerminology": true,
+        "includeRegulatorySections": true
+      },
+      "exportFormats": ["pdf", "word", "markdown"],
+      "complianceStandards": ["ICH-GCP", "21CFR11", "GDPR"]
+    }
+  },
+  "permissions": {
+    "required": ["study.read", "dmp.create", "dmp.read", "dmp.write"],
+    "optional": ["dmp.admin", "study.write"]
+  },
+  "dependencies": {
+    "services": ["data", "user", "document", "audit"],
+    "modules": [],
+    "minimumPlatformVersion": "1.0.0"
+  },
+  "capabilities": [
+    "Generate comprehensive data management plans",
+    "AI-enhanced content generation",
+    "Protocol analysis and interpretation",
+    "CRF-based data flow mapping",
+    "Regulatory compliance validation",
+    "Multi-format document export",
+    "Version control and approval workflows",
+    "Risk assessment integration",
+    "Timeline and milestone planning"
+  ],
+  "workflows": [
+    {
+      "id": "dmp-generation",
+      "name": "DMP Generation Workflow",
+      "description": "Complete workflow for generating data management plans"
+    }
+  ]
+}

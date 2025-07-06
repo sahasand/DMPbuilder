@@ -115,6 +115,7 @@ export interface DMP {
   sections: DMPSection[];
   approvals: Approval[];
   abbreviations: Abbreviation[];
+  moduleAnalysis?: any; // Optional module analysis summary
 }
 
 export interface StudyInfo {

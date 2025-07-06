@@ -1,0 +1,22 @@
+{
+  "id": "crf-validator",
+  "name": "CRF Validator",
+  "version": "1.0.0",
+  "description": "Validates CRFs for completeness, quality, and protocol alignment with improvement recommendations",
+  "author": "Clinical DMP Generator Team",
+  "type": "crf-validator",
+  "config": {
+    "enabled": true,
+    "priority": 2,
+    "therapeuticAreas": ["all"],
+    "studyPhases": ["Phase 1", "Phase 2", "Phase 3", "Phase 4"]
+  },
+  "capabilities": [
+    "CRF structural validation",
+    "Protocol-CRF alignment analysis",
+    "CDISC compliance checking",
+    "Data collection efficiency analysis",
+    "CRF improvement recommendations",
+    "Cross-reference validation"
+  ]
+}

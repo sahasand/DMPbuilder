@@ -27,6 +27,17 @@ export interface ProcessingResult {
   };
 }
 
+export interface ProtocolOnlyResult {
+  protocol: StudyProtocol;
+  riskAssessment?: RiskAssessmentResult;
+  timeline?: TimelineResult;
+  metadata: {
+    processingTime: number;
+    version: string;
+    timestamp: Date;
+  };
+}
+
 export class ClinicalProcessor {
   /**
    * Process complete clinical study documentation
@@ -233,6 +244,133 @@ export class ClinicalProcessor {
       };
     } catch (error) {
       logError('Clinical document processing failed', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Process protocol document only (no CRF required)
+   */
+  async processProtocolOnly(
+    protocolText: string,
+    options: ProcessingOptions = {}
+  ): Promise<ProtocolOnlyResult> {
+    const startTime = Date.now();
+    
+    try {
+      logInfo('Starting protocol-only processing', {
+        protocolLength: protocolText.length,
+        options,
+      });
+      
+      // Validate protocol input
+      if (!protocolText || protocolText.length < 100) {
+        throw new ValidationError('Protocol text must be at least 100 characters');
+      }
+      
+      // Choose processing approach
+      const useHybrid = options.useHybridProcessing !== false && 
+                       (options.preferredProvider === 'hybrid' || 
+                        protocolText.length > 50000);
+      
+      let protocol: StudyProtocol;
+      let processingMetadata: any = {};
+      
+      if (useHybrid) {
+        logInfo('Using hybrid AI processing for protocol', {
+          protocolLength: protocolText.length,
+        });
+        
+        // Process protocol with hybrid approach
+        const protocolResult = await hybridProcessor.processProtocol(
+          protocolText, 
+          'Protocol',
+          {
+            preferredModel: options.preferredProvider === 'anthropic' ? 'claude' : 'gemini',
+            enhanceCriticalSections: true,
+          }
+        );
+        
+        protocol = protocolResult.result;
+        processingMetadata.protocolProcessing = protocolResult.metadata;
+        
+        logInfo('Protocol processed with hybrid approach', { 
+          studyTitle: protocol.studyTitle,
+          protocolNumber: protocol.protocolNumber,
+          modelUsage: protocolResult.metadata.modelUsage,
+          enhancedSections: protocolResult.metadata.enhancedSections,
+        });
+        
+      } else {
+        // Original single-model processing
+        const useGemini = options.preferredProvider === 'gemini' || 
+                         options.preferredProvider !== 'anthropic';
+        
+        const aiClient = useGemini ? geminiClient : anthropicClient;
+        const providerName = useGemini ? 'Gemini' : 'Anthropic';
+        
+        logInfo(`Using ${providerName} for protocol processing`);
+        
+        try {
+          protocol = await aiClient.processProtocol(protocolText);
+          logInfo(`Protocol processed successfully with ${providerName}`, {
+            studyTitle: protocol.studyTitle,
+            protocolNumber: protocol.protocolNumber
+          });
+        } catch (error) {
+          if (useGemini) {
+            logInfo('Gemini failed, falling back to Anthropic for protocol');
+            protocol = await anthropicClient.processProtocol(protocolText);
+            logInfo('Protocol processed with Anthropic fallback');
+          } else {
+            throw error;
+          }
+        }
+      }
+      
+      // Generate risk assessment if requested
+      let riskAssessment;
+      if (options.includeRiskAssessment) {
+        try {
+          // For protocol-only analysis, use protocol-focused risk assessment
+          const aiClient = options.preferredProvider === 'anthropic' ? anthropicClient : geminiClient;
+          riskAssessment = await aiClient.generateRiskAssessment(protocol, []);
+          logInfo('Protocol-focused risk assessment generated');
+        } catch (error) {
+          logInfo('Risk assessment failed, continuing without it', { error: error instanceof Error ? error.message : 'Unknown error' });
+        }
+      }
+      
+      // Generate timeline if requested
+      let timeline;
+      if (options.includeTimeline) {
+        try {
+          const aiClient = options.preferredProvider === 'anthropic' ? anthropicClient : geminiClient;
+          timeline = await aiClient.generateTimeline(
+            protocol,
+            protocol.population?.targetEnrollment || 100
+          );
+          logInfo('Timeline generated for protocol');
+        } catch (error) {
+          logInfo('Timeline generation failed, continuing without it', { error: error instanceof Error ? error.message : 'Unknown error' });
+        }
+      }
+      
+      const processingTime = Date.now() - startTime;
+      
+      return {
+        protocol,
+        riskAssessment,
+        timeline,
+        metadata: {
+          processingTime,
+          version: '1.0.0',
+          timestamp: new Date(),
+          ...(useHybrid && processingMetadata ? { hybridProcessing: processingMetadata } : {}),
+        },
+      };
+    } catch (error) {
+      logError('Protocol-only processing failed', error);
       throw error;
     }
   }

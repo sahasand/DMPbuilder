@@ -14,6 +14,8 @@ import { createModuleLogger, logInfo } from '../utils/logger';
 import { clinicalProcessor } from '../api/clinical-processor';
 import { config, clinicalStandards, dataManagementConfig } from '../core/config';
 import { AIContentGenerator, SectionContext, ContentGenerationOptions } from './ai-content-generator';
+import { ModuleManager } from '../modules/module-manager';
+import { ModuleContext, ModuleResult, DMPModification } from '../types/module-types';
 
 const logger = createModuleLogger('dmp-generator');
 
@@ -24,13 +26,21 @@ export interface DMPGenerationOptions {
   approvers?: Approval[];
   useAIGeneration?: boolean;
   aiOptions?: ContentGenerationOptions;
+  useModules?: boolean;
+  moduleOptions?: {
+    parallel?: boolean;
+    continueOnError?: boolean;
+    specificModules?: string[];
+  };
 }
 
 export class DMPGenerator {
   private aiContentGenerator: AIContentGenerator;
+  private moduleManager: ModuleManager;
   
   constructor() {
     this.aiContentGenerator = new AIContentGenerator();
+    this.moduleManager = new ModuleManager();
   }
   
   private standardAbbreviations: Abbreviation[] = [
@@ -71,10 +81,22 @@ export class DMPGenerator {
       studyTitle: protocol.studyTitle,
       protocolNumber: protocol.protocolNumber,
       crfCount: crfs.length,
+      useModules: options.useModules,
     });
     
     const studyInfo = this.createStudyInfo(protocol);
-    const sections = await this.generateSections(protocol, crfs, options);
+    let sections = await this.generateSections(protocol, crfs, options);
+    
+    // Execute modules if enabled
+    let moduleResults: ModuleResult[] = [];
+    if (options.useModules !== false) { // Default to true
+      try {
+        moduleResults = await this.executeModules(protocol, crfs, options);
+        sections = this.applyModuleEnhancements(sections, moduleResults);
+      } catch (error) {
+        logInfo('Module execution failed, continuing with standard DMP generation', { error: error instanceof Error ? error.message : 'Unknown error' });
+      }
+    }
     
     const dmp: DMP = {
       studyInfo,
@@ -83,11 +105,13 @@ export class DMPGenerator {
       sections,
       approvals: options.approvers || this.generateDefaultApprovals(),
       abbreviations: this.standardAbbreviations,
+      moduleAnalysis: moduleResults.length > 0 ? this.summarizeModuleResults(moduleResults) : undefined,
     };
     
     logInfo('DMP generated successfully', {
       sectionCount: sections.length,
       version: dmp.version,
+      modulesExecuted: moduleResults.length,
     });
     
     return dmp;
@@ -858,6 +882,203 @@ export class DMPGenerator {
       { name: 'Sponsor Clinical Data Manager', title: 'Sponsor CDM' },
       { name: 'Sr. Director Clinical Operations', title: 'Clinical Operations Lead' },
     ];
+  }
+
+  /**
+   * Execute clinical research modules
+   */
+  private async executeModules(
+    protocol: StudyProtocol,
+    crfs: CRFSpecification[],
+    options: DMPGenerationOptions
+  ): Promise<ModuleResult[]> {
+    // Initialize module manager if not already done
+    if (!this.moduleManager) {
+      this.moduleManager = new ModuleManager();
+    }
+    
+    try {
+      await this.moduleManager.initialize();
+    } catch (error) {
+      logInfo('Module manager initialization failed', { error: error instanceof Error ? error.message : 'Unknown error' });
+      return [];
+    }
+
+    const context: ModuleContext = {
+      protocol,
+      crfs,
+      metadata: {
+        timestamp: new Date(),
+        initiator: 'dmp-generator',
+        environment: process.env.NODE_ENV === 'production' ? 'production' : 
+                     process.env.NODE_ENV === 'test' ? 'test' : 'development'
+      }
+    };
+
+    const executionOptions = {
+      modules: options.moduleOptions?.specificModules,
+      continueOnError: options.moduleOptions?.continueOnError ?? true,
+      parallel: options.moduleOptions?.parallel ?? false
+    };
+
+    logInfo('Executing clinical modules', {
+      moduleCount: this.moduleManager.getActiveModules().length,
+      executionOptions
+    });
+
+    return await this.moduleManager.executeModules(context, executionOptions);
+  }
+
+  /**
+   * Apply module enhancements to DMP sections
+   */
+  private applyModuleEnhancements(
+    sections: DMPSection[],
+    moduleResults: ModuleResult[]
+  ): DMPSection[] {
+    const enhancedSections = [...sections];
+    const allModifications: DMPModification[] = [];
+
+    // Collect all DMP modifications from module results
+    moduleResults.forEach(result => {
+      if (result.dmpModifications) {
+        allModifications.push(...result.dmpModifications);
+      }
+    });
+
+    // Apply modifications to sections
+    allModifications.forEach(modification => {
+      const targetSection = enhancedSections.find(section => 
+        section.title.toLowerCase().includes(modification.section.toLowerCase()) ||
+        section.subsections?.some(sub => sub.title.toLowerCase().includes(modification.section.toLowerCase()))
+      );
+
+      if (targetSection) {
+        this.applyModificationToSection(targetSection, modification);
+      } else {
+        // Create new section if needed for high priority modifications
+        if (modification.priority === 'high' || modification.priority === 'critical') {
+          const newSection: DMPSection = {
+            sectionNumber: (enhancedSections.length + 1).toString(),
+            title: modification.section,
+            content: modification.content,
+            subsections: []
+          };
+          enhancedSections.push(newSection);
+        }
+      }
+    });
+
+    // Add module insights section if we have meaningful results
+    const insights = this.generateModuleInsights(moduleResults);
+    if (insights) {
+      enhancedSections.splice(1, 0, insights); // Insert after overview
+      // Update section numbers
+      this.renumberSections(enhancedSections);
+    }
+
+    return enhancedSections;
+  }
+
+  /**
+   * Apply a single modification to a section
+   */
+  private applyModificationToSection(section: DMPSection, modification: DMPModification): void {
+    switch (modification.type) {
+      case 'add':
+        section.content += `\n\n${modification.content}`;
+        break;
+      case 'modify':
+        if (section.content.length < 100) {
+          section.content = modification.content;
+        } else {
+          section.content += `\n\n**Module Enhancement**: ${modification.content}`;
+        }
+        break;
+      case 'replace':
+        section.content = modification.content;
+        break;
+      // 'delete' type not implemented for safety
+    }
+  }
+
+  /**
+   * Generate module insights section
+   */
+  private generateModuleInsights(moduleResults: ModuleResult[]): DMPSection | null {
+    const successfulResults = moduleResults.filter(r => r.status === 'success');
+    
+    if (successfulResults.length === 0) {
+      return null;
+    }
+
+    let content = 'This DMP has been enhanced with insights from clinical research modules:\n\n';
+    
+    successfulResults.forEach((result, index) => {
+      const moduleData = result.data as any;
+      content += `### ${index + 1}. ${result.moduleId} Analysis\n\n`;
+      
+      if (result.messages && result.messages.length > 0) {
+        content += `**Key Findings:**\n`;
+        result.messages.forEach(message => {
+          content += `- ${message}\n`;
+        });
+        content += '\n';
+      }
+
+      if (result.recommendations && result.recommendations.length > 0) {
+        content += `**Recommendations:**\n`;
+        result.recommendations.forEach(rec => {
+          content += `- ${rec}\n`;
+        });
+        content += '\n';
+      }
+
+      if (result.warnings && result.warnings.length > 0) {
+        content += `**Considerations:**\n`;
+        result.warnings.forEach(warning => {
+          content += `- ${warning}\n`;
+        });
+        content += '\n';
+      }
+    });
+
+    return {
+      sectionNumber: '1.1',
+      title: 'Clinical Analysis Insights',
+      content,
+      subsections: []
+    };
+  }
+
+  /**
+   * Renumber sections after insertion
+   */
+  private renumberSections(sections: DMPSection[]): void {
+    sections.forEach((section, index) => {
+      section.sectionNumber = (index + 1).toString();
+    });
+  }
+
+  /**
+   * Summarize module results for DMP metadata
+   */
+  private summarizeModuleResults(moduleResults: ModuleResult[]): any {
+    const summary = {
+      totalModules: moduleResults.length,
+      successfulModules: moduleResults.filter(r => r.status === 'success').length,
+      failedModules: moduleResults.filter(r => r.status === 'error').length,
+      warningModules: moduleResults.filter(r => r.status === 'warning').length,
+      totalRecommendations: moduleResults.reduce((sum, r) => sum + (r.recommendations?.length || 0), 0),
+      totalModifications: moduleResults.reduce((sum, r) => sum + (r.dmpModifications?.length || 0), 0),
+      executionMetrics: {
+        totalTime: moduleResults.reduce((sum, r) => sum + r.metrics.executionTime, 0),
+        averageTime: moduleResults.length > 0 ? 
+          moduleResults.reduce((sum, r) => sum + r.metrics.executionTime, 0) / moduleResults.length : 0
+      }
+    };
+
+    return summary;
   }
 }
 

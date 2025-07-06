@@ -510,16 +510,19 @@ Generate content that shows understanding of how objectives and endpoints drive 
   private buildDataReviewFocusPrompt(context: SectionContext): string {
     const { protocol, crfs, studyMetadata } = context;
     
+    // Ensure crfs is an array
+    const crfArray = Array.isArray(crfs) ? crfs : [];
+    
     return `Generate a data review focus section for a Data Management Plan with the following context:
 
 **Study Information:**
 - Study Phase: ${protocol.studyPhase}
 - Therapeutic Area: ${studyMetadata.therapeuticArea}
 - Study Complexity: ${studyMetadata.complexity}
-- Number of CRFs: ${crfs.length}
+- Number of CRFs: ${crfArray.length}
 
 **Key CRFs:**
-${crfs.slice(0, 5).map(crf => `- ${crf.formName}`).join('\n')}
+${crfArray.length > 0 ? crfArray.slice(0, 5).map(crf => `- ${crf.formName || crf.name || 'Unknown CRF'}`).join('\n') : '- No CRFs specified'}
 
 **Primary Endpoints:**
 ${protocol.endpoints?.primary?.map(ep => `- ${ep.name}`).join('\n') || 'Not specified'}
